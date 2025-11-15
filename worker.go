@@ -20,6 +20,7 @@ import (
 var (
 	httpClient     *http.Client
 	processedCount int64
+	stampede       *StampedePreventer
 )
 
 type ResultsFlusher struct {
@@ -133,6 +134,8 @@ func main() {
 	flusher := NewResultsFlusher(rdb)
 	defer flusher.Stop()
 
+	stampede = NewStampedePreventer()
+
 	log.Printf("[%s] 🚀 Starting...\n", workerID)
 
 	//Graceful Shutdown
@@ -204,7 +207,7 @@ func main() {
 }
 
 func checkURL(url string, workerID string, rdb *redis.Client) URLResult {
-	startTime := time.Now()
+	//startTime := time.Now()
 	cacheKey := fmt.Sprintf("cache:%s", url)
 
 	cache, err := rdb.Get(ctx, cacheKey).Bytes()
@@ -219,26 +222,31 @@ func checkURL(url string, workerID string, rdb *redis.Client) URLResult {
 	// Cache miss
 	rdb.Incr(ctx, "cache_miss")
 
-	result := URLResult{
-		URL:       url,
-		WorkerID:  workerID,
-		CheckedAt: startTime,
-	}
+	result := stampede.Fetch(url, func(u string) URLResult {
+		fetchStart := time.Now()
+		res := URLResult{
+			URL:       u,
+			WorkerID:  workerID,
+			CheckedAt: fetchStart,
+		}
 
-	resp, err := httpClient.Get(url)
-	if err != nil {
-		result.Error = err.Error()
-		result.Duration = time.Since(startTime).Milliseconds()
-		return result
-	}
-	defer resp.Body.Close()
+		resp, err := httpClient.Get(u)
+		if err != nil {
+			res.Error = err.Error()
+			res.Duration = time.Since(fetchStart).Milliseconds()
+			return res
+		}
+		defer resp.Body.Close()
 
-	result.Status = resp.StatusCode
-	result.Duration = time.Since(startTime).Milliseconds()
+		res.Status = resp.StatusCode
+		res.Duration = time.Since(fetchStart).Milliseconds()
 
-	if resp.StatusCode != 200 {
-		result.Error = fmt.Sprintf("HTTP %d", resp.StatusCode)
-	}
+		if resp.StatusCode != 200 {
+			res.Error = fmt.Sprintf("HTTP %d", resp.StatusCode)
+		}
+
+		return res
+	})
 
 	// Cache result for 5 minutes
 	jsonResult, _ := json.Marshal(result)
