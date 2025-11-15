@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -19,6 +21,87 @@ var (
 	httpClient     *http.Client
 	processedCount int64
 )
+
+type ResultsFlusher struct {
+	rdb         *redis.Client
+	resultsChan chan URLResult
+	stopChan    chan struct{}
+	wg          sync.WaitGroup
+}
+
+func NewResultsFlusher(rdb *redis.Client) *ResultsFlusher {
+	f := &ResultsFlusher{
+		rdb:         rdb,
+		resultsChan: make(chan URLResult, 1000),
+		stopChan:    make(chan struct{}),
+	}
+	f.wg.Add(1)
+	go f.run()
+	return f
+}
+
+func (f *ResultsFlusher) Add(ctx context.Context, result URLResult) {
+	select {
+	case f.resultsChan <- result:
+	//Buffer successfully
+	default:
+		data, _ := json.Marshal(result)
+		f.rdb.LPush(ctx, "results", data)
+		log.Println("⚠️ Flusher channel full, direct write fallback")
+	}
+}
+
+func (f *ResultsFlusher) run() {
+	defer f.wg.Done()
+
+	batch := make([]URLResult, 0, 500)
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	flush := func() {
+		if len(batch) == 0 {
+			return
+		}
+
+		args := make([]interface{}, len(batch))
+		for i, result := range batch {
+			data, _ := json.Marshal(result)
+			args[i] = data
+		}
+
+		ctx := context.Background()
+		if err := f.rdb.LPush(ctx, "results", args...).Err(); err != nil {
+			log.Printf("❌ Flush failed: %v\n", err)
+		} else {
+			log.Printf("📦 Flushed %d results to Redis\n", len(batch))
+		}
+
+		batch = batch[:0]
+	}
+
+	for {
+		select {
+		case result := <-f.resultsChan:
+			batch = append(batch, result)
+
+			if len(batch) >= 500 {
+				flush()
+			}
+
+		case <-ticker.C:
+			flush()
+		case <-f.stopChan:
+			flush()
+			return
+		}
+	}
+}
+
+func (f *ResultsFlusher) Stop() {
+	close(f.stopChan)
+	f.wg.Wait()
+	close(f.resultsChan)
+}
 
 func main() {
 	//Load config
@@ -47,6 +130,9 @@ func main() {
 	rdb := NewRedisClient(config.RedisAddr)
 	defer rdb.Close()
 
+	flusher := NewResultsFlusher(rdb)
+	defer flusher.Stop()
+
 	log.Printf("[%s] 🚀 Starting...\n", workerID)
 
 	//Graceful Shutdown
@@ -57,7 +143,13 @@ func main() {
 		<-sigChan
 		log.Printf("\n[%s] 🛑 Shutting down gracefully...", workerID)
 		log.Printf("[%s] 📊 Processed %d URLs in this session", workerID, atomic.LoadInt64(&processedCount))
+
+		// ✅ NEW: Flush remaining batch before exit
+		flusher.Stop()
+		log.Printf("[%s] ✅ All batches flushed", workerID)
+
 		os.Exit(0)
+
 	}()
 
 	maxRetries := config.MaxRetries
@@ -94,11 +186,7 @@ func main() {
 
 		urlResult := checkURL(url, workerID, rdb)
 
-		resultJSON, _ := json.Marshal(urlResult)
-		rdb.LPush(ctx, "results", resultJSON)
-
-		// Trim results to keep memory under control
-		rdb.LTrim(ctx, "results", 0, int64(config.ResultsToKeep-1))
+		flusher.Add(ctx, urlResult)
 
 		if urlResult.Error == "" {
 			rdb.Incr(ctx, "success")
