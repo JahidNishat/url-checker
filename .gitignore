@@ -1,0 +1,26 @@
+# Binaries
+worker
+producer
+monitor
+api
+generate_urls
+*.exe
+
+# Logs and data
+*.log
+urls.txt
+
+# Go
+vendor/
+
+# IDE
+.vscode/
+.idea/
+
+# Env files (secrets)
+.env
+*.env
+
+# OS
+.DS_Store
+Thumbs.db
