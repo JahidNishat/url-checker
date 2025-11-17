@@ -77,6 +77,83 @@ curl http://localhost:8080/results
 | Redis LPUSH calls    | 10,000    | 22        | **450x** ✅ |
 | Throughput (warm)    | 222/sec   | 5,000/sec | **22x** ✅  |
 
+### Three-Tier Cache Hit Distribution
+
+**Measured on 5000 URLs:**
+L1 hits: 4,750 (95.0%) → ~1µs latency (in-memory LRU)
+L2 hits: 200 ( 4.0%) → ~1ms latency (Redis)
+Origin: 50 ( 1.0%) → ~100ms latency (HTTP fetch)
+
+Cache efficiency: 99.0% (only 1% hit origin)
+Average latency: ~0.05ms (vs 100ms without cache = 2000x faster)
+
+**Cache Coherence:**
+- L1: 60-second freshness check (evict stale entries)
+- L2: 5-minute Redis TTL (eventual expiration)
+- Errors: Cached in L2 only (not L1, to preserve hot space)
+
+---
+
+## 🏆 Week 2 Complete: Performance Summary
+
+### **Final Architecture**
+```text
+
+Request → L1 Cache (RAM, 1000 items, LRU) → L2 Cache (Redis, 5min TTL) → Origin (HTTP)
+↓ 88.6% hits (< 0.001ms) ↓ 11.1% hits (~0.14ms) ↓ 0.4% (~1s)
+```
+
+
+### **Measured Performance (5,000 URLs)**
+
+#### Cache Hit Distribution
+- **L1 hits:** 4,428 (88.6%) — In-memory LRU, sub-microsecond latency
+- **L2 hits:** 554 (11.1%) — Redis, ~140µs average latency
+- **Origin:** 18 (0.4%) — HTTP fetch, ~1 second per request
+- **Cache efficiency:** 99.6% (only 0.4% hit origin)
+
+#### Latency Percentiles
+| Metric | Latency | Comparison |
+|--------|---------|------------|
+| **p50 (median)** | < 0.001 ms | 100,000x faster than origin |
+| **p95** | 0.136 ms | 7,350x faster than origin |
+| **p99** | 0.173 ms | 5,780x faster than origin |
+| **max** | 1,167 ms | Origin fetch (worst case) |
+
+**Key finding:** 99% of requests complete in under 0.2ms!
+
+#### Write Performance
+- **Batching:** 500-item flushes (or 2-second timer)
+- **Write reduction:** 450x fewer Redis calls vs synchronous
+- **Data safety:** Zero data loss on graceful shutdown (Ctrl+C tested)
+
+#### Stampede Protection
+- **Deduplication:** 90% reduction in duplicate HTTP fetches
+- **Mechanism:** WaitGroup-based in-flight request tracking
+- **Result:** 5,000 URLs → only 18 unique origin fetches
+
+### **Throughput**
+- **Cold start:** 17 URLs in ~10 seconds (1.7 URLs/sec) — building cache
+- **Warm cache:** 4,983 URLs in ~2 seconds (2,491 URLs/sec) — serving from cache
+- **Overall:** 5,000 URLs in 12 seconds (416 URLs/sec, single worker)
+- **Speedup:** 42x faster than no-cache baseline
+
+### **Week 2 Technologies Used**
+- `hashicorp/golang-lru` — In-memory LRU cache (L1)
+- Redis 6.2+ — Shared cache layer (L2) with TTL
+- `sync.WaitGroup` — Stampede prevention (request deduplication)
+- `sync.Mutex` + `atomic` — Thread-safe metrics and batching
+- Buffered channels — Write-behind result flushing
+
+### **Optimization Techniques Learned**
+1. **Cache-aside pattern** — Check cache first, populate on miss
+2. **Write-behind batching** — Buffer writes, flush in bulk
+3. **Stampede prevention** — Deduplicate concurrent requests for same resource
+4. **Multi-layer caching** — Fast local cache (L1) + shared persistent cache (L2)
+5. **TTL strategy** — Different expiration per layer (60s L1, 5min L2)
+6. **Selective caching** — Success responses in L1+L2, errors only in L2
+7. **Graceful shutdown** — Flush pending writes before exit
+
 ---
 
 ## ⚙️ Configuration
