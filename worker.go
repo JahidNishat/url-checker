@@ -211,6 +211,10 @@ func main() {
 		if atomic.LoadInt64(&processedCount)%100 == 0 {
 			log.Printf("[%s] 📈 Processed %d URLs", workerID, atomic.LoadInt64(&processedCount))
 		}
+
+		if atomic.LoadInt64(&processedCount)%500 == 0 {
+			PrintCacheStats(workerID)
+		}
 	}
 }
 
@@ -240,4 +244,34 @@ func checkURL(url string, workerID string, rdb *redis.Client) URLResult {
 
 		return res
 	})
+}
+
+func PrintCacheStats(workerID string) {
+	l1, l2, origin := cacheManager.GetStats()
+
+	total := l1 + l2 + origin
+	if total == 0 {
+		return
+	}
+
+	l1Pct := (float64(l1) / float64(total)) * 100
+	l2Pct := (float64(l2) / float64(total)) * 100
+	originPct := (float64(origin) / float64(total)) * 100
+
+	log.Printf("\n"+
+		"════════════════════════════════════════\n"+
+		"[%s] 📊 CACHE STATS (Total: %d)\n"+
+		"════════════════════════════════════════\n"+
+		"L1 hits:    %5d (%5.1f%%)  ← ~1µs latency\n"+
+		"L2 hits:    %5d (%5.1f%%)  ← ~1ms latency\n"+
+		"Origin:     %5d (%5.1f%%)  ← ~100ms latency\n"+
+		"════════════════════════════════════════\n"+
+		"Cache efficiency: %.1f%% (L1+L2)\n"+
+		"════════════════════════════════════════\n",
+		workerID, total,
+		l1, l1Pct,
+		l2, l2Pct,
+		origin, originPct,
+		l1Pct+l2Pct,
+	)
 }
