@@ -23,6 +23,7 @@ var (
 	stampede       *StampedePreventer
 	cacheManager   *CacheManager
 	err            error
+	latencyTracker *LatencyTracker
 )
 
 type ResultsFlusher struct {
@@ -144,6 +145,8 @@ func main() {
 		os.Exit(1)
 	}
 
+	latencyTracker = NewLatencyTracker()
+
 	log.Printf("[%s] 🚀 Starting...\n", workerID)
 
 	//Graceful Shutdown
@@ -158,6 +161,10 @@ func main() {
 		// ✅ NEW: Flush remaining batch before exit
 		flusher.Stop()
 		log.Printf("[%s] ✅ All batches flushed", workerID)
+
+		// New: Print stats
+		PrintCacheStats(workerID)
+		latencyTracker.PrintStats()
 
 		os.Exit(0)
 
@@ -214,12 +221,14 @@ func main() {
 
 		if atomic.LoadInt64(&processedCount)%500 == 0 {
 			PrintCacheStats(workerID)
+			latencyTracker.PrintStats()
 		}
 	}
 }
 
 func checkURL(url string, workerID string, rdb *redis.Client) URLResult {
-	return cacheManager.Get(ctx, url, func(u string) URLResult {
+	start := time.Now()
+	result := cacheManager.Get(ctx, url, func(u string) URLResult {
 		fetchStart := time.Now()
 		res := URLResult{
 			URL:       u,
@@ -244,6 +253,11 @@ func checkURL(url string, workerID string, rdb *redis.Client) URLResult {
 
 		return res
 	})
+
+	latency := time.Since(start)
+	latencyTracker.Record(latency)
+
+	return result
 }
 
 func PrintCacheStats(workerID string) {
