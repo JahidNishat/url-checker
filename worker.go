@@ -21,6 +21,8 @@ var (
 	httpClient     *http.Client
 	processedCount int64
 	stampede       *StampedePreventer
+	cacheManager   *CacheManager
+	err            error
 )
 
 type ResultsFlusher struct {
@@ -136,6 +138,12 @@ func main() {
 
 	stampede = NewStampedePreventer()
 
+	cacheManager, err = NewCacheManager(1000, rdb, stampede)
+	if err != nil {
+		log.Printf("[%s] ❌ failed to create cache manager: %v\n", workerID, err)
+		os.Exit(1)
+	}
+
 	log.Printf("[%s] 🚀 Starting...\n", workerID)
 
 	//Graceful Shutdown
@@ -207,22 +215,7 @@ func main() {
 }
 
 func checkURL(url string, workerID string, rdb *redis.Client) URLResult {
-	//startTime := time.Now()
-	cacheKey := fmt.Sprintf("cache:%s", url)
-
-	cache, err := rdb.Get(ctx, cacheKey).Bytes()
-	if err == nil {
-		// Cache hit
-		rdb.Incr(ctx, "cache_hit")
-		cacheRes := URLResult{}
-		json.Unmarshal(cache, &cacheRes)
-		return cacheRes
-	}
-
-	// Cache miss
-	rdb.Incr(ctx, "cache_miss")
-
-	result := stampede.Fetch(url, func(u string) URLResult {
+	return cacheManager.Get(ctx, url, func(u string) URLResult {
 		fetchStart := time.Now()
 		res := URLResult{
 			URL:       u,
@@ -242,15 +235,9 @@ func checkURL(url string, workerID string, rdb *redis.Client) URLResult {
 		res.Duration = time.Since(fetchStart).Milliseconds()
 
 		if resp.StatusCode != 200 {
-			res.Error = fmt.Sprintf("HTTP %d", resp.StatusCode)
+			res.Error = fmt.Sprintf("[%s] HTTP %d", workerID, resp.StatusCode)
 		}
 
 		return res
 	})
-
-	// Cache result for 5 minutes
-	jsonResult, _ := json.Marshal(result)
-	rdb.Set(ctx, cacheKey, jsonResult, 5*time.Minute)
-
-	return result
 }
