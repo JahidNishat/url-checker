@@ -111,6 +111,12 @@ func main() {
 	//Load config
 	config := LoadConfig()
 
+	dbm, err := NewDBManager(config.LeaderDSN, config.FollowerDSN)
+	if err != nil {
+		log.Fatalf("could not create DB manager: %v\n", err)
+	}
+	defer dbm.Close()
+
 	//Setup HTTP client
 	httpClient = &http.Client{
 		Timeout: time.Duration(config.HTTPTimeout) * time.Second,

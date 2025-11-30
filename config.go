@@ -11,6 +11,9 @@ type AppConfig struct {
 	HTTPTimeout   int
 	MaxRetries    int
 	ResultsToKeep int
+
+	LeaderDSN   string
+	FollowerDSN string
 }
 
 func LoadConfig() AppConfig {
@@ -20,6 +23,9 @@ func LoadConfig() AppConfig {
 		HTTPTimeout:   getEnvInt("HTTP_TIMEOUT", 5),
 		MaxRetries:    getEnvInt("MAX_RETRIES", 5),
 		ResultsToKeep: getEnvInt("RESULTS_TO_KEEP", 10000),
+
+		LeaderDSN:   getEnv("LEADER_DSN", "postgres://postgres:12345@localhost:5433/distributed_url_checker?sslmode=disable"),
+		FollowerDSN: getEnv("FOLLOWER_DSN", "postgres://postgres:12345@localhost:5434/distributed_url_checker?sslmode=disable"),
 	}
 }
 

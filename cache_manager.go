@@ -64,6 +64,7 @@ func (cm *CacheManager) Get(ctx context.Context, url string, fetchFunc func(stri
 
 	//Fetch URL
 	result := stampede.Fetch(url, fetchFunc)
+	atomic.AddInt64(&cm.origin, 1)
 	if result.Status == 200 {
 		cm.l1.Add(url, cacheEntry{result, time.Now()})
 	}
