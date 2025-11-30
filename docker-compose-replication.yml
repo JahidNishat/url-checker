@@ -1,56 +1,40 @@
 services:
   postgres-leader:
-    image: postgres:15-alpine
+    image: postgres:16
     container_name: postgres-leader
-    environment:
-      POSTGRES_PASSWORD: 12345
-      POSTGRES_USER: postgres
-      POSTGRES_DB: urlchecker
-    command: >
-      postgres
-      -c wal_level=replica
-      -c max_wal_senders=3
-      -c max_replication_slots=3
-      -c hot_standby=on
-      -c listen_addresses='*'
-    ports:
-      - "5432:5432"
-    volumes:
-      - leader-data:/var/lib/postgresql/data
-      - ./init-leader.sh:/docker-entrypoint-initdb.d/init-leader.sh
-    networks:
-      - url-checker-network
-
-  postgres-follower:
-    image: postgres:15-alpine
-    container_name: postgres-follower
-    environment:
-      POSTGRES_PASSWORD: 12345
-      POSTGRES_USER: postgres
-    command: >
-      bash -c "
-          until pg_isready -h postgres-leader -p 5432 -U postgres; do
-            echo 'Waiting for leader...';
-            sleep 2;
-          done;
-          if [ ! -s /var/lib/postgresql/data/PG_VERSION ]; then
-            echo 'Cloning data from leader...';
-            PGPASSWORD=12345 pg_basebackup -h postgres-leader -D /var/lib/postgresql/data -U postgres -v -P -R;
-          fi;
-          exec docker-entrypoint.sh postgres
-          "
     ports:
       - "5433:5432"
+    environment:
+      POSTGRES_PASSWORD: "12345"
+      POSTGRES_DB: "distributed_url_checker"
+      POSTGRES_USER: "postgres"
+    command: >
+      postgres -c wal_level=replica
+      -c max_replication_slots=10
+      -c max_wal_senders=10
+    volumes:
+      - ./postgres-leader:/var/lib/postgresql/data
+      - ./init-leader.sh:/docker-entrypoint-initdb.d/init-leader.sh
+    networks:
+      - distributed-url-checker
+
+  postgres-follower:
+    image: postgres:16
+    container_name: postgres-follower
+    ports:
+      - "5434:5432"
     depends_on:
       - postgres-leader
+    environment:
+      POSTGRES_PASSWORD: "12345"
+      POSTGRES_USER: "postgres"
     volumes:
-      - follower-data:/var/lib/postgresql/data
+      - postgres-follower:/var/lib/postgresql/data
+      - ./init-replica.sh:/docker-entrypoint-initdb.d/init-replica.sh
     networks:
-      - url-checker-network
+      - distributed-url-checker
 
 networks:
-  url-checker-network:
-
+  distributed-url-checker:
 volumes:
-  leader-data:
-  follower-data:
+  postgres-follower:
